@@ -4,6 +4,7 @@ import { MotionEstimator } from './motion.js';
 import { TextFinder, MoneyReader } from './scanner.js';
 import { Tracker } from './tracker.js';
 import { savePhoto, Recorder } from './capture.js';
+import { IDENTITY, bounds, compose, invert, moveBox, scaleBox } from './geometry.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -27,9 +28,12 @@ const state = {
   W: 0,
   H: 0,
   crop: null,
-  motion: { x: 0, y: 0 }, // total camera movement in screen pixels, for late detections
+  camera: IDENTITY,      // total camera motion so far (see geometry.js), to place late detections
+  epoch: 0,              // bumped when tracking resets; detections from before are dropped
   running: false,
-  scannerStatus: 'idle',
+  scannerStatus: 'idle', // 'idle' | 'loading' | 'ready' | 'error'
+  loadProgress: 0,       // 0..1 while the lenses download
+  loadStarted: 0,
   scanError: null,
 };
 
@@ -37,7 +41,12 @@ const effects = new Effects();
 const motion = new MotionEstimator();
 const tracker = new Tracker();
 const recorder = new Recorder();
-const scanner = new TextFinder((s) => { state.scannerStatus = s; }, DETECT_MAX_SIDE);
+const scanner = new TextFinder((status, progress) => {
+  if (status === 'loading' && state.scannerStatus !== 'loading') state.loadStarted = performance.now();
+  state.scannerStatus = status;
+  if (progress !== undefined) state.loadProgress = progress;
+  renderProgress();
+}, DETECT_MAX_SIDE);
 const moneyReader = new MoneyReader();
 
 const detectCanvas = document.createElement('canvas');
@@ -51,6 +60,8 @@ $('demo').addEventListener('click', () => begin('photo'));
 // demo: null for the real camera, or 'photo' / 'street'.
 async function begin(demo) {
   $('intro-error').hidden = true;
+  // Download the lenses while the camera prompt is up; errors resurface when scanning.
+  scanner.init().catch(() => {});
   try {
     state.source = demo ? await createDemoSource(demo) : await startCamera(video, state.facing);
   } catch (err) {
@@ -102,19 +113,21 @@ function frame(now) {
 
   const target = state.glasses ? 1 : 0;
   state.wipe += Math.sign(target - state.wipe) * Math.min(Math.abs(target - state.wipe), dt / WIPE_SECONDS);
-  if (state.wipe === 0 && tracker.boxes.length) {
-    tracker.clear();
-    motion.reset();
-  }
+  if (state.wipe === 0 && tracker.boxes.length) resetTracking();
 
   if (state.wipe > 0) {
-    const m = motion.estimate(src.el, crop);
+    const m = motion.estimate(src.el, crop, W, H);
     if (m) {
-      const dx = m.dx * (W / motion.w);
-      const dy = m.dy * (H / motion.h);
-      state.motion.x += dx;
-      state.motion.y += dy;
-      tracker.shift(dx, dy);
+      state.camera = compose(m, state.camera);
+      const before = tracker.boxes.map((b) => [b, b.t.cx, b.t.cy]);
+      tracker.transform(m);
+      // Then let each sign settle onto where it really went (near and far signs
+      // shift differently as you walk).
+      for (const [b, px, py] of before) {
+        if (b.dying || b.alpha < 0.5) continue;
+        const r = motion.refine(px, py, b.t.cx, b.t.cy, b.t.w, b.t.h);
+        if (r) tracker.nudge(b, r.dx * 0.8, r.dy * 0.8);
+      }
     }
     tracker.step(dt, W, H);
   }
@@ -171,9 +184,16 @@ function resize() {
   if (W !== state.W || H !== state.H) {
     canvas.width = state.W = W;
     canvas.height = state.H = H;
-    tracker.clear();
-    motion.reset();
+    resetTracking();
   }
+}
+
+// Forget all overlays and motion history (glasses off, resize, camera switch).
+function resetTracking() {
+  tracker.clear();
+  motion.reset();
+  state.camera = IDENTITY;
+  state.epoch++;
 }
 
 function coverCrop(srcW, srcH, W, H) {
@@ -218,7 +238,8 @@ async function detectLoop() {
       crop.sx + fx * crop.sw, crop.sy + fy * crop.sh, fs * crop.sw, fs * crop.sh,
       0, 0, dw, dh,
     );
-    const motionAtCapture = { ...state.motion };
+    const cameraAtCapture = state.camera;
+    const { epoch } = state;
 
     let found;
     try {
@@ -231,14 +252,21 @@ async function detectLoop() {
       continue;
     }
 
-    // The frame was captured a moment ago; move results by how far the camera moved since.
-    if (state.W === W && state.H === H && state.wipe > 0) {
-      const k = region.w / dw;
-      const mx = state.motion.x - motionAtCapture.x;
-      const my = state.motion.y - motionAtCapture.y;
-      tracker.update(found.map((b) => ({
-        x: region.x + b.x * k + mx, y: region.y + b.y * k + my, w: b.w * k, h: b.h * k,
-      })), prefs.money, { region: { ...region, x: region.x + mx, y: region.y + my }, zoomed });
+    // The frame was captured a moment ago; move results by how the camera moved since.
+    if (state.epoch === epoch && state.wipe > 0) {
+      const sinceCapture = compose(state.camera, invert(cameraAtCapture));
+      const kx = region.w / dw;
+      const ky = region.h / dh;
+      const toNow = (b) => {
+        const box = scaleBox(b, kx, ky);
+        box.cx += region.x;
+        box.cy += region.y;
+        return moveBox(sinceCapture, box);
+      };
+      const scanned = bounds(moveBox(sinceCapture, {
+        cx: region.x + region.w / 2, cy: region.y + region.h / 2, w: region.w, h: region.h, a: 0,
+      }));
+      tracker.update(found.map(toNow), prefs.money, { region: scanned, zoomed });
     }
     await sleep(80);
   }
@@ -252,18 +280,12 @@ async function readLoop() {
     const box = state.wipe === 1 && !document.hidden && src?.ready() ? tracker.nextUnread() : null;
     if (!box || !state.crop) continue;
 
-    // Box is in screen pixels; map it back to source pixels.
-    const { crop, W, H } = state;
-    const kx = crop.sw / W;
-    const ky = crop.sh / H;
-    const sx = Math.max(0, crop.sx + box.x * kx);
-    const sy = Math.max(0, crop.sy + box.y * ky);
-    const region = {
-      sx, sy,
-      sw: Math.min(src.width - sx, box.w * kx),
-      sh: Math.min(src.height - sy, box.h * ky),
-    };
-    if (region.sw < 4 || region.sh < 4) {
+    // Box is in screen pixels; map it back to source pixels (same scale on both axes).
+    const { crop, W } = state;
+    const k = crop.sw / W;
+    const { t } = box;
+    const region = { cx: crop.sx + t.cx * k, cy: crop.sy + t.cy * k, w: t.w * k, h: t.h * k, a: t.a };
+    if (region.w < 4 || region.h < 4) {
       box.text = '';
       continue;
     }
@@ -315,8 +337,7 @@ $('flip').addEventListener('click', async () => {
   try {
     state.source = await startCamera(video, next);
     state.facing = next;
-    tracker.clear();
-    motion.reset();
+    resetTracking();
   } catch (err) {
     toast(err.message || 'Could not switch camera');
     state.source = await startCamera(video, state.facing).catch(() => state.source);
@@ -363,7 +384,9 @@ function updateStatus(now) {
   let text;
   if (state.wipe < 1) text = state.glasses ? '' : 'NORMAL VIEW';
   else if (state.scanError) text = state.scanError.toUpperCase();
-  else if (state.scannerStatus === 'loading' || state.scannerStatus === 'idle') text = 'TUNING THE LENSES…';
+  else if (state.scannerStatus === 'loading' || state.scannerStatus === 'idle') {
+    text = state.loadProgress < 1 ? `TUNING THE LENSES… ${Math.round(state.loadProgress * 100)}%` : 'TUNING THE LENSES…';
+  }
   else if (headacheLevel(now) > 0.6) text = 'TAKE THEM OFF';
   else {
     const n = tracker.count;
@@ -373,6 +396,20 @@ function updateStatus(now) {
     $('status').textContent = text;
     lastStatus = text;
   }
+}
+
+// Download progress of the lenses (detection model + engine): a bar along the top,
+// and a line under the intro buttons. Hidden for quick loads (already cached).
+function renderProgress() {
+  const shown = state.scannerStatus === 'loading' && performance.now() - state.loadStarted > 250;
+  const bar = $('progress');
+  bar.hidden = !shown;
+  bar.style.setProperty('--p', state.loadProgress.toFixed(3));
+  const line = $('intro-progress');
+  line.hidden = !shown;
+  line.textContent = state.loadProgress < 1
+    ? `DOWNLOADING THE LENSES… ${Math.round(state.loadProgress * 100)}%`
+    : 'POLISHING THE LENSES…';
 }
 
 let toastTimer = 0;
@@ -431,7 +468,10 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       // The service worker adds the headers that let the text model use several CPU
       // cores. They only apply from the next page load, so reload once — but never
       // after the glasses are on (that would drop the camera) and never in a loop.
-      if (window.crossOriginIsolated) return;
+      if (window.crossOriginIsolated) {
+        preloadLenses();
+        return;
+      }
       const reloadOnce = async () => {
         if (state.running || window.crossOriginIsolated) return;
         try {
@@ -450,7 +490,17 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
     })
     .catch((err) => console.warn('Service worker:', err));
+} else {
+  preloadLenses();
 }
+
+// Start downloading the lenses on the intro screen, so they're ready sooner.
+function preloadLenses() {
+  scanner.init().catch(() => {}); // errors resurface (and retry) when scanning starts
+}
+
+// ?debug exposes the internals to the console (e.g. remote-debugging a phone).
+if (new URLSearchParams(location.search).has('debug')) window.sunglasses = { state, tracker, scanner };
 
 const demoParam = new URLSearchParams(location.search).get('demo');
 if (demoParam !== null) begin(demoParam === 'street' ? 'street' : 'photo');

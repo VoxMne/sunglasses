@@ -29,11 +29,12 @@ Then use "Add to Home Screen" to install it as an app (works offline after the f
 |---|---|
 | `js/app.js` | Render loop, glasses wipe, controls, detection loop (alternates full frame and zoomed quarters) |
 | `js/effects.js` | Black-and-white filter, grain, vignette, headache glitch |
-| `js/scanner.js` | Sends frames to the detector worker; Tesseract.js reads found signs only to spot money |
-| `js/detector-worker.js` | Runs the PP-OCRv4 text detection model off the main thread: WebGPU when available, else multi-core WebAssembly |
-| `js/motion.js` | Estimates camera movement so overlays follow signs between scans |
-| `js/tracker.js` | Matches detections to overlays, smooths and draws the messages |
-| `js/messages.js` | The message list and money detection |
+| `js/scanner.js` | Sends frames to the detector worker; Tesseract.js (English + Serbian Cyrillic/Latin) reads found signs only to spot money |
+| `js/detector-worker.js` | Runs the PP-OCRv4 text detection model off the main thread (WebGPU, else multi-core WebAssembly), turns its output into tilted boxes, reports download progress |
+| `js/motion.js` | Estimates camera slide, zoom and roll from a grid of patches, plus a per-sign correction, so overlays follow signs between scans |
+| `js/geometry.js` | Tilted boxes (merge, overlap, union) and camera-motion math |
+| `js/tracker.js` | Matches detections to overlays, merges duplicates, smooths and draws the tilted messages |
+| `js/messages.js` | The message list and money detection (Serbian Cyrillic is transliterated, so ДИНАРА and DINARA both count) |
 | `js/capture.js` | Photo / video capture and sharing |
 | `sw.js` | Offline cache; adds COOP/COEP headers so the model can use several CPU cores |
 
@@ -43,6 +44,7 @@ Regenerate PNG icons after editing the shapes: `node scripts/make-icons.mjs`.
 
 - `?lens=cpu` — skip WebGPU and run detection on the CPU.
 - `&threads=N` — cap CPU threads (e.g. `threads=1` for the slowest path).
+- `?debug` — exposes `window.sunglasses` (state, tracker, scanner) to the console.
 
 The backend in use is logged to the console: `Text detection: webgpu|wasm, N thread(s)`.
 

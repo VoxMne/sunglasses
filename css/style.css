@@ -44,6 +44,28 @@ button {
   cursor: pointer;
 }
 
+/* Download progress of the lenses */
+#progress {
+  position: fixed;
+  top: env(safe-area-inset-top);
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.15);
+  pointer-events: none;
+  z-index: 30;
+}
+
+#progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--fg);
+  transform-origin: left;
+  transform: scaleX(var(--p, 0));
+  transition: transform 0.2s linear;
+}
+
 /* Intro */
 .screen {
   position: fixed;

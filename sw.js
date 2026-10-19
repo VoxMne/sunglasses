@@ -6,7 +6,7 @@
 // GitHub Pages can't send custom headers, so the service worker does it; they take
 // effect from the page load after this worker takes control (app.js reloads once).
 
-const CACHE = 'sunglasses-v4';
+const CACHE = 'sunglasses-v5';
 const SHELL = [
   './',
   'index.html',
@@ -17,6 +17,7 @@ const SHELL = [
   'js/capture.js',
   'js/detector-worker.js',
   'js/effects.js',
+  'js/geometry.js',
   'js/messages.js',
   'js/motion.js',
   'js/scanner.js',
@@ -30,7 +31,9 @@ const SHELL = [
 const CDN_HOSTS = ['cdn.jsdelivr.net', 'tessdata.projectnaptha.com'];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's HTTP cache, which may still hold the old version.
+  const fresh = SHELL.map((path) => new Request(path, { cache: 'reload' }));
+  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(fresh)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {
@@ -58,7 +61,13 @@ self.addEventListener('fetch', (event) => {
 async function networkFirst(request) {
   const cache = await caches.open(CACHE);
   try {
-    const res = await fetch(request);
+    // Always check with the server (unchanged files cost a tiny "not modified"): the
+    // browser's HTTP cache could otherwise serve an old module next to new ones right
+    // after an update, and mismatched modules break the app.
+    const fresh = request.mode === 'navigate'
+      ? new Request(request.url, { cache: 'no-cache', credentials: 'same-origin', redirect: 'manual' })
+      : new Request(request, { cache: 'no-cache' });
+    const res = await fetch(fresh);
     if (res.ok) cache.put(request, res.clone());
     return res;
   } catch {

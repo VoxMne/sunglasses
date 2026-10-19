@@ -17,19 +17,38 @@ const MESSAGES = [
 
 export const MONEY_MESSAGE = 'THIS IS YOUR GOD';
 
-// Words that suggest the text is on a banknote.
-const MONEY_RE = /DOLLAR|EURO|DINAR|POUND|STERLING|RESERVE|TENDER|BANK|CENTRAL|[$€£¥]|\bUSD\b|\bEUR\b|\bRSD\b|БАНКА|ДИНАР/i;
+// Words that suggest money: banknotes, coins, banks, prices. Matched against a Latin
+// transliteration, so Serbian Cyrillic (НАРОДНА БАНКА СРБИЈЕ, 100 ДИНАРА) and Serbian
+// Latin (NARODNA BANKA SRBIJE, 100 DINARA) both count. DINAP: a Cyrillic Р read as P.
+const MONEY_RE = /DOLLAR|EURO|EVRO|DINA[RP]|POUND|STERLING|RESERVE|TENDER|BANK|[$€£¥]|\b(USD|EUR|RSD|DIN)\b/;
+
+// Serbian Cyrillic to Latin, letter for letter.
+const CYRILLIC = {
+  А: 'A', Б: 'B', В: 'V', Г: 'G', Д: 'D', Ђ: 'DJ', Е: 'E', Ж: 'Z', З: 'Z', И: 'I',
+  Ј: 'J', К: 'K', Л: 'L', Љ: 'LJ', М: 'M', Н: 'N', Њ: 'NJ', О: 'O', П: 'P', Р: 'R',
+  С: 'S', Т: 'T', Ћ: 'C', У: 'U', Ф: 'F', Х: 'H', Ц: 'C', Ч: 'C', Џ: 'DZ', Ш: 'S',
+};
 
 const TOTAL = MESSAGES.reduce((sum, [, w]) => sum + w, 0);
 
+// Upper-case Latin letters only: Cyrillic transliterated, accents (Š, Č, Ž, Ć) dropped.
+export function toLatin(text) {
+  return text
+    .toUpperCase()
+    .replace(/[Ѐ-ӿ]/g, (ch) => CYRILLIC[ch] ?? ch)
+    .replace(/Đ/g, 'DJ')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+}
+
 export function isMoneyText(text) {
-  return MONEY_RE.test(text);
+  return MONEY_RE.test(toLatin(text));
 }
 
 // Stable choice per piece of text, so a sign keeps its message.
 export function pickMessage(text, moneyMode) {
   if (moneyMode || isMoneyText(text)) return MONEY_MESSAGE;
-  let n = hash(text.toUpperCase().replace(/[^A-Z0-9]/g, '')) % TOTAL;
+  let n = hash(toLatin(text)) % TOTAL;
   for (const [msg, w] of MESSAGES) {
     if (n < w) return msg;
     n -= w;
