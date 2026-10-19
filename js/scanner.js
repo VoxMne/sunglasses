@@ -2,31 +2,23 @@
 //
 // TextFinder: PaddleOCR's PP-OCRv4 text *detection* model (DBNet) via ONNX Runtime Web.
 //   It only says where text is — which is all we need to cover a sign — and copes with
-//   real-world signs: logos, stylized fonts, angles, any script.
+//   real-world signs: logos, stylized fonts, angles, any script. The model runs in
+//   js/detector-worker.js so the camera view never stalls during a scan.
 // MoneyReader: Tesseract.js, used only to read crops of found text so banknotes can
 //   get THIS IS YOUR GOD.
 
-const ORT_VERSION = '1.20.1';
-const ORT_BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
 const MODEL_URL = 'models/text-det.onnx';
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
-
-// DBNet post-processing, same defaults as PaddleOCR.
-const BIN_THRESH = 0.3;   // pixel counts as text above this probability
-const BOX_THRESH = 0.55;  // region kept if its mean probability is above this
-const UNCLIP_RATIO = 1.5; // the model predicts shrunken regions; grow them back
-const MIN_PIXELS = 12;
-
-// ImageNet normalisation, applied in BGR order like PaddleOCR (images come from cv2).
-const MEAN = [0.485, 0.456, 0.406];
-const STD = [0.229, 0.224, 0.225];
 
 export class TextFinder {
   constructor(onStatus = () => {}, maxSide = 800) {
     this.onStatus = onStatus;
     this.maxSide = maxSide;
-    this.session = null;
+    this.worker = null;
     this.loading = null;
+    this.pending = new Map();
+    this.nextId = 1;
+    this.info = null; // { backend: 'webgpu' | 'wasm', threads }
     this.input = document.createElement('canvas');
     this.inputCtx = this.input.getContext('2d', { willReadFrequently: true });
   }
@@ -34,6 +26,8 @@ export class TextFinder {
   init() {
     if (!this.loading) {
       this.loading = this.#load().catch((err) => {
+        this.worker?.terminate();
+        this.worker = null;
         this.loading = null;
         throw err;
       });
@@ -43,21 +37,39 @@ export class TextFinder {
 
   async #load() {
     this.onStatus('loading');
-    await loadScript(`${ORT_BASE}ort.min.js`, () => window.ort);
-    const { ort } = window;
-    ort.env.wasm.wasmPaths = ORT_BASE;
-    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
-    this.session = await ort.InferenceSession.create(MODEL_URL, {
-      executionProviders: ['wasm'],
-      graphOptimizationLevel: 'all',
-    });
+    this.worker = new Worker(new URL('./detector-worker.js', import.meta.url), { type: 'module' });
+    this.worker.onmessage = ({ data }) => {
+      const job = this.pending.get(data.id);
+      if (!job) return;
+      this.pending.delete(data.id);
+      if (data.ok) job.resolve(data.result);
+      else job.reject(new Error(data.error));
+    };
+    this.worker.onerror = (e) => {
+      const err = new Error(e.message || 'The lens worker crashed.');
+      for (const job of this.pending.values()) job.reject(err);
+      this.pending.clear();
+    };
+    const modelUrl = new URL(MODEL_URL, document.baseURI).href;
+    // Test switches: ?lens=cpu skips WebGPU, &threads=N caps CPU threads.
+    const params = new URLSearchParams(location.search);
+    const maxThreads = Number(params.get('threads')) || 4;
+    this.info = await this.#call({ type: 'init', modelUrl, cpuOnly: params.get('lens') === 'cpu', maxThreads });
+    console.info(`Text detection: ${this.info.backend}, ${this.info.threads} thread(s)`);
     this.onStatus('ready');
+  }
+
+  #call(msg, transfer = []) {
+    return new Promise((resolve, reject) => {
+      const id = this.nextId++;
+      this.pending.set(id, { resolve, reject });
+      this.worker.postMessage({ ...msg, id }, transfer);
+    });
   }
 
   // Returns [{ x, y, w, h }] in the canvas' pixel coordinates, one box per sign.
   async scan(canvas) {
     await this.init();
-    const { ort } = window;
 
     // The model needs sides that are multiples of 32.
     const scale = Math.min(1, this.maxSide / Math.max(canvas.width, canvas.height));
@@ -68,70 +80,20 @@ export class TextFinder {
       this.input.height = rh;
     }
     this.inputCtx.drawImage(canvas, 0, 0, rw, rh);
-    const px = this.inputCtx.getImageData(0, 0, rw, rh).data;
+    const pixels = this.inputCtx.getImageData(0, 0, rw, rh).data;
 
-    const plane = rw * rh;
-    const data = new Float32Array(3 * plane);
-    for (let i = 0, p = 0; i < plane; i++, p += 4) {
-      data[i] = (px[p + 2] / 255 - MEAN[0]) / STD[0];             // B
-      data[plane + i] = (px[p + 1] / 255 - MEAN[1]) / STD[1];     // G
-      data[2 * plane + i] = (px[p] / 255 - MEAN[2]) / STD[2];     // R
-    }
-
-    const feeds = { [this.session.inputNames[0]]: new ort.Tensor('float32', data, [1, 3, rh, rw]) };
-    const results = await this.session.run(feeds);
-    const prob = results[this.session.outputNames[0]].data;
+    const started = performance.now();
+    const found = await this.#call({ type: 'scan', pixels, width: rw, height: rh }, [pixels.buffer]);
+    this.lastScanMs = performance.now() - started;
 
     const kx = canvas.width / rw;
     const ky = canvas.height / rh;
-    const boxes = regions(prob, rw, rh).map((b) => ({
+    return mergeBoxes(found.map((b) => ({
       x: b.x * kx, y: b.y * ky, w: b.w * kx, h: b.h * ky,
-    }));
-    return mergeBoxes(boxes);
+    })));
   }
 }
 
-// Connected regions of the probability map -> padded bounding boxes.
-function regions(prob, w, h) {
-  const seen = new Uint8Array(w * h);
-  const stack = new Int32Array(w * h);
-  const out = [];
-  for (let start = 0; start < prob.length; start++) {
-    if (seen[start] || prob[start] <= BIN_THRESH) continue;
-    let top = 0;
-    stack[top++] = start;
-    seen[start] = 1;
-    let minX = w, minY = h, maxX = 0, maxY = 0, count = 0, sum = 0;
-    while (top) {
-      const i = stack[--top];
-      const x = i % w;
-      const y = (i - x) / w;
-      count++;
-      sum += prob[i];
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-      if (x > 0 && !seen[i - 1] && prob[i - 1] > BIN_THRESH) { seen[i - 1] = 1; stack[top++] = i - 1; }
-      if (x < w - 1 && !seen[i + 1] && prob[i + 1] > BIN_THRESH) { seen[i + 1] = 1; stack[top++] = i + 1; }
-      if (y > 0 && !seen[i - w] && prob[i - w] > BIN_THRESH) { seen[i - w] = 1; stack[top++] = i - w; }
-      if (y < h - 1 && !seen[i + w] && prob[i + w] > BIN_THRESH) { seen[i + w] = 1; stack[top++] = i + w; }
-    }
-    if (count < MIN_PIXELS || sum / count < BOX_THRESH) continue;
-
-    const bw = maxX - minX + 1;
-    const bh = maxY - minY + 1;
-    const d = (bw * bh * UNCLIP_RATIO) / (2 * (bw + bh));
-    const box = {
-      x: Math.max(0, minX - d),
-      y: Math.max(0, minY - d),
-      w: Math.min(w, maxX + 1 + d) - Math.max(0, minX - d),
-      h: Math.min(h, maxY + 1 + d) - Math.max(0, minY - d),
-    };
-    if (box.w >= 6 && box.h >= 5) out.push(box);
-  }
-  return out;
-}
 
 // Reads the text inside one box. Lazy: Tesseract only loads when first needed.
 export class MoneyReader {

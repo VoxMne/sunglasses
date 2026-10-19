@@ -1,7 +1,12 @@
 // Offline support. App files: network first (so updates show up), cache as fallback.
 // Text-reader files from the CDN: cache first (they are versioned and large).
+//
+// Also adds the cross-origin isolation headers (COOP/COEP) to the app's own files.
+// They unlock SharedArrayBuffer, which the text model needs to use several CPU cores.
+// GitHub Pages can't send custom headers, so the service worker does it; they take
+// effect from the page load after this worker takes control (app.js reloads once).
 
-const CACHE = 'sunglasses-v3';
+const CACHE = 'sunglasses-v4';
 const SHELL = [
   './',
   'index.html',
@@ -10,6 +15,7 @@ const SHELL = [
   'js/app.js',
   'js/camera.js',
   'js/capture.js',
+  'js/detector-worker.js',
   'js/effects.js',
   'js/messages.js',
   'js/motion.js',
@@ -41,9 +47,9 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
 
   if (url.origin === location.origin && /\/(models|demo)\//.test(url.pathname)) {
-    event.respondWith(cacheFirst(request)); // big files that rarely change
+    event.respondWith(cacheFirst(request).then(isolate)); // big files that rarely change
   } else if (url.origin === location.origin) {
-    event.respondWith(networkFirst(request));
+    event.respondWith(networkFirst(request).then(isolate));
   } else if (CDN_HOSTS.includes(url.hostname)) {
     event.respondWith(cacheFirst(request));
   }
@@ -67,4 +73,14 @@ async function cacheFirst(request) {
   const res = await fetch(request);
   if (res.ok) cache.put(request, res.clone());
   return res;
+}
+
+function isolate(res) {
+  // Errors, opaque responses and redirects can't (and needn't) be rewrapped.
+  if (!res || res.status === 0 || res.type === 'opaqueredirect') return res;
+  const headers = new Headers(res.headers);
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+  headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+  headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }

@@ -426,7 +426,30 @@ const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
 // ---------- PWA ----------
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch((err) => console.warn('Service worker:', err));
+  navigator.serviceWorker.register('sw.js')
+    .then(() => {
+      // The service worker adds the headers that let the text model use several CPU
+      // cores. They only apply from the next page load, so reload once — but never
+      // after the glasses are on (that would drop the camera) and never in a loop.
+      if (window.crossOriginIsolated) return;
+      const reloadOnce = async () => {
+        if (state.running || window.crossOriginIsolated) return;
+        try {
+          // An older service worker (from before this feature) may still be in charge;
+          // only reload once the one in control actually adds the headers.
+          const probe = await fetch('manifest.webmanifest', { cache: 'no-store' });
+          if (probe.headers.get('cross-origin-embedder-policy') !== 'require-corp') return;
+          if (sessionStorage.getItem('sunglasses.isolationReload')) return;
+          sessionStorage.setItem('sunglasses.isolationReload', '1');
+        } catch {
+          return;
+        }
+        if (!state.running) location.reload();
+      };
+      if (navigator.serviceWorker.controller) reloadOnce();
+      navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
+    })
+    .catch((err) => console.warn('Service worker:', err));
 }
 
 const demoParam = new URLSearchParams(location.search).get('demo');
