@@ -1,0 +1,243 @@
+:root {
+  --fg: #f2f2f2;
+  --bg: #000;
+  --dim: rgba(255, 255, 255, 0.55);
+  --glass: rgba(0, 0, 0, 0.45);
+  --red: #e5322d;
+  --font: "Helvetica Neue", "Arial Black", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#video { display: none; }
+
+#view {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  display: block;
+  background: #000;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+/* Intro */
+.screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
+  text-align: center;
+  background: #000;
+  z-index: 10;
+}
+
+.screen h1 {
+  margin: 0;
+  font-size: clamp(36px, 11vw, 72px);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  background: #fff;
+  color: #000;
+  padding: 0.05em 0.3em;
+}
+
+.screen p {
+  margin: 0;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.6;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.big {
+  margin-top: 12px;
+  padding: 16px 28px;
+  background: var(--fg);
+  color: #000;
+  font-weight: 900;
+  font-size: 18px;
+  letter-spacing: 0.06em;
+}
+
+.big:active { transform: scale(0.97); }
+
+.link {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 13px;
+  text-decoration: underline;
+}
+
+.error {
+  max-width: 360px;
+  color: var(--red) !important;
+}
+
+/* HUD */
+#hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+#hud button { pointer-events: auto; }
+
+.top {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 12px);
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-shadow: 0 0 4px #000;
+}
+
+#credit {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 30px);
+  left: 16px;
+  right: 16px;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  text-shadow: 0 0 4px #000;
+}
+
+#rec { color: var(--red); animation: blink 1s steps(2) infinite; }
+
+@keyframes blink { 50% { opacity: 0; } }
+
+.bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(env(safe-area-inset-bottom) + 16px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.chips { display: flex; gap: 8px; }
+
+.chip {
+  padding: 7px 12px;
+  background: var(--glass);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+}
+
+.chip[aria-pressed="true"] {
+  background: var(--fg);
+  color: #000;
+  border-color: var(--fg);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 36px;
+}
+
+.round {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.round.small {
+  width: 48px;
+  height: 48px;
+  background: var(--glass);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  font-size: 22px;
+}
+
+.round.small:disabled { opacity: 0.3; }
+
+.shutter {
+  width: 72px;
+  height: 72px;
+  border: 4px solid var(--fg);
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.shutter:active { background: var(--fg); }
+
+.record span {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--red);
+  transition: border-radius 0.15s;
+}
+
+.record.on span { border-radius: 3px; }
+
+.glasses-toggle {
+  padding: 10px 22px;
+  background: var(--fg);
+  color: #000;
+  font-weight: 900;
+  font-size: 14px;
+  letter-spacing: 0.12em;
+}
+
+.glasses-toggle.off {
+  background: var(--glass);
+  color: var(--fg);
+  border: 1px solid var(--fg);
+}
+
+#toast {
+  position: fixed;
+  left: 50%;
+  top: calc(env(safe-area-inset-top) + 48px);
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  padding: 8px 14px;
+  background: var(--fg);
+  color: #000;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  z-index: 20;
+}

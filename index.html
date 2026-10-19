@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Sunglasses">
+  <meta name="description" content="Point your camera at the world and see the messages hidden behind it.">
+  <title>Sunglasses</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="view"></canvas>
+
+  <section id="intro" class="screen">
+    <h1>SUNGLASSES</h1>
+    <p>What you see is not what is there.<br>Put them on.</p>
+    <button id="start" class="big">PUT ON THE GLASSES</button>
+    <button id="demo" class="link">No camera? Try the demo (Belgrade)</button>
+    <p id="intro-error" class="error" hidden></p>
+  </section>
+
+  <section id="hud" hidden>
+    <div class="top">
+      <span id="status">SCANNING</span>
+      <span id="rec" hidden>&#9679; REC</span>
+    </div>
+    <p id="credit" hidden></p>
+
+    <div class="bottom">
+      <div class="chips">
+        <button class="chip" id="chip-money" aria-pressed="false">$ MONEY</button>
+        <button class="chip" id="chip-headache" aria-pressed="true">HEADACHE</button>
+      </div>
+      <div class="controls">
+        <button id="flip" class="round small" aria-label="Switch camera">&#8635;</button>
+        <button id="shutter" class="round shutter" aria-label="Take photo"></button>
+        <button id="record" class="round small record" aria-label="Record video"><span></span></button>
+      </div>
+      <button id="glasses" class="glasses-toggle">TAKE OFF</button>
+    </div>
+  </section>
+
+  <div id="toast" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
